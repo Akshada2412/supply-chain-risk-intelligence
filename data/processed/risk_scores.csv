@@ -1,0 +1,6 @@
+product_category,hhi_score,top_supplier,top_share_pct,concentration_risk,geo_risk_score,hhi_normalized,combined_risk_score
+Electronics,650.5,China,17.2446,LOW,7,0.65,3.19
+Raw Materials,1249.6,United States,29.2696,LOW,2,1.25,1.55
+Semiconductors,923.6,United States,22.3944,LOW,2,0.92,1.35
+Auto Parts,807.4,United States,17.5437,LOW,2,0.81,1.29
+Pharmaceuticals,758.4,United States,14.1029,LOW,2,0.76,1.26
