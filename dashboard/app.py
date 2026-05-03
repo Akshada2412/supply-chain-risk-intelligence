@@ -293,9 +293,6 @@ with st.sidebar:
     total_trade = (
         filtered_temp['import_value_usd'].sum() / 1e12
     )
-    high_risk_c = filtered_temp[
-        filtered_temp['geo_risk_score'] >= 7
-    ]['country'].nunique()
     countries_n = filtered_temp['country'].nunique()
 
     st.markdown(f"""
@@ -329,7 +326,7 @@ with st.sidebar:
             {high_risk_c} countries
         </div>
         <div class='sidebar-stat-sub'>
-            geo risk score ≥ 7
+            geo risk score ≥ {risk_min}
         </div>
     </div>
     """, unsafe_allow_html=True)
