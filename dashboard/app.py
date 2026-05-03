@@ -215,9 +215,10 @@ def compute_risk(filtered_df):
             hhi_score=('share_squared', 'sum'),
             top_supplier=('country', 'first'),
             top_share_pct=('market_share_pct', 'first'),
-            geo_risk_score=('geo_risk_score', 'first')
+            geo_risk_score=('geo_risk_score', 'mean')
         ).reset_index()
     )
+    hhi['geo_risk_score'] = hhi['geo_risk_score'].round(2)
     hhi['hhi_score'] = hhi['hhi_score'].round(1)
     hhi['hhi_normalized'] = (
         hhi['hhi_score'] / 10000 * 10
