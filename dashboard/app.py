@@ -609,7 +609,11 @@ with r1:
 with r2:
     st.markdown(
         "<p class='chart-title'>"
-        "HHI Score vs Geo Risk — Bubble View</p>",
+        "HHI Score vs Geo Risk — Bubble View</p>"
+        "<p style='font-size:0.75rem;opacity:0.45;"
+        "margin-top:-0.25rem;'>"
+        "Y-axis reflects avg geo risk of filtered "
+        "supplier base · updates with filters</p>",
         unsafe_allow_html=True
     )
     fig4 = px.scatter(
