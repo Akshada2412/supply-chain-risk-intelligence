@@ -570,10 +570,11 @@ with r2:
         color_continuous_scale=[
             '#1e3a5f', '#F59E0B', '#EF4444'
         ],
-        size_max=50
+        size_max=25
     )
     fig4.update_traces(
         textposition='top center',
+        textfont=dict(size=10),
         hovertemplate=(
             "<b>%{text}</b><br>"
             "HHI Score: <b>%{x:.1f}</b><br>"
@@ -707,7 +708,7 @@ with c2:
         color='region',
         size='imports_b',
         hover_name='country',
-        size_max=50,
+        size_max=30,
         color_discrete_sequence=[
             '#F59E0B', '#60A5FA', '#34D399',
             '#F87171', '#A78BFA',
@@ -715,6 +716,7 @@ with c2:
         ]
     )
     fig6.update_traces(
+        opacity=0.75,
         hovertemplate=(
             "<b>%{hovertext}</b><br>"
             "Geo Risk: <b>%{x}/10</b><br>"
