@@ -618,21 +618,19 @@ with r2:
         x='hhi_score',
         y='geo_risk_score',
         size='combined_risk_score',
-        color='combined_risk_score',
-        text='product_category',
-        color_continuous_scale=[
-            '#1e3a5f', '#F59E0B', '#EF4444'
+        color='product_category',
+        color_discrete_sequence=[
+            '#F59E0B', '#EF4444', '#60A5FA',
+            '#34D399', '#A78BFA'
         ],
-        size_max=25
+        size_max=25,
+        hover_name='product_category'
     )
     fig4.update_traces(
-        textposition='top center',
-        textfont=dict(size=10),
         hovertemplate=(
-            "<b>%{text}</b><br>"
+            "<b>%{hovertext}</b><br>"
             "HHI Score: <b>%{x:.1f}</b><br>"
-            "Geo Risk: <b>%{y}/10</b><br>"
-            "Combined Risk: <b>%{marker.color:.2f}</b><br>"
+            "Geo Risk: <b>%{y:.2f}/10</b><br>"
             "<i>Top-right = highest danger zone</i>"
             "<extra></extra>"
         )
@@ -640,7 +638,6 @@ with r2:
     fig4.update_layout(
         height=320,
         margin=dict(l=0, r=0, t=5, b=0),
-        coloraxis_showscale=False,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
         xaxis=dict(
@@ -648,8 +645,13 @@ with r2:
             showgrid=False
         ),
         yaxis=dict(
-            title='Geo Risk Score',
+            title='Avg Geo Risk Score',
             gridcolor='rgba(128,128,128,0.1)'
+        ),
+        legend=dict(
+            title='Category',
+            orientation='v',
+            x=1.0
         )
     )
     st.plotly_chart(fig4, use_container_width=True)
