@@ -179,10 +179,57 @@ st.markdown("""
 @st.cache_data
 def load_data():
     df = pd.read_csv('data/raw/trade_raw.csv')
-    risk = pd.read_csv('data/processed/risk_scores.csv')
-    return df, risk
+    return df
 
-df, risk_df = load_data()
+def compute_risk(filtered_df):
+    global_totals = (
+        filtered_df.groupby('product_category')
+        ['export_value_usd'].sum()
+        .reset_index()
+    )
+    global_totals.columns = [
+        'product_category', 'global_export_total'
+    ]
+
+    country_shares = (
+        filtered_df.groupby(
+            ['country', 'product_category',
+             'geo_risk_score']
+        )['export_value_usd'].sum()
+        .reset_index()
+    )
+    country_shares = country_shares.merge(
+        global_totals, on='product_category'
+    )
+    country_shares['market_share_pct'] = (
+        country_shares['export_value_usd'] * 100.0 /
+        country_shares['global_export_total']
+    )
+    country_shares['share_squared'] = (
+        country_shares['market_share_pct'] ** 2
+    )
+
+    hhi = (
+        country_shares.groupby('product_category')
+        .agg(
+            hhi_score=('share_squared', 'sum'),
+            top_supplier=('country', 'first'),
+            top_share_pct=('market_share_pct', 'first'),
+            geo_risk_score=('geo_risk_score', 'first')
+        ).reset_index()
+    )
+    hhi['hhi_score'] = hhi['hhi_score'].round(1)
+    hhi['hhi_normalized'] = (
+        hhi['hhi_score'] / 10000 * 10
+    ).round(2)
+    hhi['combined_risk_score'] = (
+        (hhi['hhi_normalized'] * 0.6) +
+        (hhi['geo_risk_score'] * 0.4)
+    ).round(2)
+
+    return hhi
+
+df = load_data()
 
 def get_conn(df):
     conn = sqlite3.connect(':memory:')
@@ -220,7 +267,8 @@ with st.sidebar:
 
     risk_min = st.slider(
         "Min Geo Risk Score",
-        min_value=1, max_value=10, value=1
+        min_value=1, max_value=10, value=1,
+        help="Filter countries with geo risk score at or above this value"
     )
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -235,9 +283,11 @@ with st.sidebar:
     filtered_temp = df[
         (df['year'] == selected_year) &
         (df['product_category'].isin(selected_products)) &
-        (df['region'].isin(selected_regions)) &
-        (df['geo_risk_score'] >= risk_min)
+        (df['region'].isin(selected_regions))
     ]
+    high_risk_c = filtered_temp[
+        filtered_temp['geo_risk_score'] >= risk_min
+    ]['country'].nunique()
 
     total_trade = (
         filtered_temp['import_value_usd'].sum() / 1e12
@@ -303,6 +353,7 @@ filtered = df[
 ]
 
 conn = get_conn(filtered)
+risk_df = compute_risk(filtered)
 
 # ---- HERO ----
 high_risk_countries = filtered[
