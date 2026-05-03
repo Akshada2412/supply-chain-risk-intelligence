@@ -265,10 +265,10 @@ def color_risk(val):
     return ''
 
 st.dataframe(
-    alert_data.style.applymap(
-        color_risk,
-        subset=['Geo Risk Score']
-    ),
+    alert_data.style.map(
+    color_risk,
+    subset=['Geo Risk Score']
+),
     use_container_width=True,
     height=300
 )
