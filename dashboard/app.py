@@ -4,6 +4,7 @@ import sqlite3
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
+from demand_forecasting_tab import render_demand_forecasting_tab
 
 st.set_page_config(
     page_title="Supply Chain Risk Intelligence",
@@ -890,3 +891,10 @@ st.markdown(
     "</p>",
     unsafe_allow_html=True
 )
+
+st.markdown("---")
+st.markdown(
+    "<p class='section-label'>Demand Forecasting & Inventory Optimization</p>",
+    unsafe_allow_html=True
+)
+render_demand_forecasting_tab(df)
