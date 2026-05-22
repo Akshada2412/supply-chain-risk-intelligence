@@ -3,13 +3,16 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-from prophet import Prophet
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 import warnings
 warnings.filterwarnings('ignore')
+
 
 def render_demand_forecasting_tab(df):
     """
     Demand Forecasting & Inventory Optimization tab.
+    Uses statsmodels Holt-Winters + SARIMAX for forecasting.
     Accepts the existing trade_raw dataframe.
     """
 
@@ -27,24 +30,25 @@ def render_demand_forecasting_tab(df):
     .rec-sub{font-size:0.75rem;color:gray;line-height:1.55}
     .section-lbl{font-size:0.65rem;font-weight:700;letter-spacing:0.12em;
                  text-transform:uppercase;opacity:0.4;margin-bottom:1rem;
-                 padding-bottom:0.5rem;border-bottom:1px solid rgba(128,128,128,0.15)}
+                 padding-bottom:0.5rem;
+                 border-bottom:1px solid rgba(128,128,128,0.15)}
     </style>
     """, unsafe_allow_html=True)
 
     st.markdown("### Demand Forecasting & Inventory Optimization")
-    st.markdown("Prophet-powered import demand forecasting · Inventory KPIs · Supplier performance · Reorder recommendations")
+    st.markdown(
+        "Holt-Winters exponential smoothing forecast · "
+        "Inventory KPIs · Supplier performance · Reorder recommendations"
+    )
     st.markdown("---")
 
     # ── PREP DATA ──────────────────────────────────────────────────
-    # Aggregate annual import demand by product category
     demand = (
         df.groupby(['year', 'product_category'])['import_value_usd']
         .sum().reset_index()
     )
     demand['import_bn'] = (demand['import_value_usd'] / 1e9).round(2)
-
-    categories   = sorted(demand['product_category'].unique())
-    all_countries = sorted(df['country'].unique())
+    categories = sorted(demand['product_category'].unique())
 
     # ── CONTROLS ───────────────────────────────────────────────────
     ctrl1, ctrl2, ctrl3 = st.columns(3)
@@ -55,58 +59,66 @@ def render_demand_forecasting_tab(df):
     with ctrl3:
         lead_time_days = st.slider("Supplier Lead Time (days)", 7, 90, 30)
 
-    cat_data = demand[demand['product_category'] == selected_cat].copy()
-    cat_data = cat_data.sort_values('year')
+    cat_data = (
+        demand[demand['product_category'] == selected_cat]
+        .sort_values('year')
+        .reset_index(drop=True)
+    )
+    y = cat_data['import_bn'].values
+    years = cat_data['year'].values
+
+    # ── FORECAST — Holt-Winters ─────────────────────────────────────
+    try:
+        model = ExponentialSmoothing(
+            y, trend='add', seasonal=None,
+            initialization_method='estimated'
+        )
+        fit = model.fit(optimized=True, remove_bias=True)
+        forecast_vals = fit.forecast(forecast_years)
+
+        # Bootstrap confidence intervals
+        residuals   = fit.resid
+        resid_std   = residuals.std()
+        ci_factor   = 1.96
+        ci_upper    = forecast_vals + ci_factor * resid_std * np.sqrt(
+            np.arange(1, forecast_years + 1))
+        ci_lower    = forecast_vals - ci_factor * resid_std * np.sqrt(
+            np.arange(1, forecast_years + 1))
+        fitted_vals = fit.fittedvalues
+
+    except Exception:
+        # Fallback: linear trend
+        z = np.polyfit(np.arange(len(y)), y, 1)
+        p = np.poly1d(z)
+        forecast_vals = p(np.arange(len(y), len(y) + forecast_years))
+        fitted_vals   = p(np.arange(len(y)))
+        resid_std     = np.std(y - fitted_vals)
+        ci_upper = forecast_vals + 1.96 * resid_std
+        ci_lower = forecast_vals - 1.96 * resid_std
+
+    future_years  = np.arange(years[-1] + 1, years[-1] + 1 + forecast_years)
+    last_actual   = float(y[-1])
+    next_forecast = float(forecast_vals[0])
+    growth_pct    = (next_forecast - last_actual) / last_actual * 100
+    demand_vol    = (np.std(y) / np.mean(y)) * 100
 
     # ── SECTION 1: DEMAND FORECASTING ──────────────────────────────
-    st.markdown("<p class='section-lbl'>Demand Forecasting — Prophet Model</p>",
-                unsafe_allow_html=True)
-
-    # Prepare Prophet input — use Jan 1 of each year as date
-    prophet_df = pd.DataFrame({
-        'ds': pd.to_datetime(cat_data['year'].astype(str) + '-01-01'),
-        'y':  cat_data['import_bn'].values
-    })
-
-    # Fit Prophet
-    model = Prophet(
-        yearly_seasonality=False,
-        weekly_seasonality=False,
-        daily_seasonality=False,
-        changepoint_prior_scale=0.3,
-        seasonality_mode='additive',
-        interval_width=0.95
+    st.markdown(
+        "<p class='section-lbl'>Demand Forecasting — "
+        "Holt-Winters Exponential Smoothing Model</p>",
+        unsafe_allow_html=True
     )
-    model.fit(prophet_df)
 
-    # Forecast
-    last_year   = int(cat_data['year'].max())
-    future_yrs  = pd.date_range(
-        start=f'{last_year+1}-01-01',
-        periods=forecast_years, freq='YS'
-    )
-    future_df   = pd.DataFrame({'ds': future_yrs})
-    all_future  = pd.concat([prophet_df[['ds']], future_df], ignore_index=True)
-    forecast    = model.predict(all_future)
-
-    hist_mask   = forecast['ds'] <= prophet_df['ds'].max()
-    fore_mask   = forecast['ds'] >  prophet_df['ds'].max()
-
-    # KPI metrics
-    last_actual   = cat_data['import_bn'].iloc[-1]
-    next_forecast = forecast[fore_mask]['yhat'].iloc[0]
-    growth_pct    = ((next_forecast - last_actual) / last_actual * 100)
-    avg_demand    = cat_data['import_bn'].mean()
-    demand_vol    = cat_data['import_bn'].std() / avg_demand * 100
-
-    m1,m2,m3,m4 = st.columns(4)
+    m1, m2, m3, m4 = st.columns(4)
     for col, lbl, val, sub, clr in [
         (m1, "Latest Import Demand", f"${last_actual:.1f}B",
-         f"{last_year} actual", "#4285F4"),
+         f"{years[-1]} actual", "#4285F4"),
         (m2, "Next Year Forecast",   f"${next_forecast:.1f}B",
-         f"{last_year+1} projected", "#34A853" if growth_pct>0 else "#EA4335"),
+         f"{future_years[0]} projected",
+         "#34A853" if growth_pct > 0 else "#EA4335"),
         (m3, "Projected Growth",     f"{growth_pct:+.1f}%",
-         "vs prior year", "#34A853" if growth_pct>0 else "#EA4335"),
+         "vs prior year",
+         "#34A853" if growth_pct > 0 else "#EA4335"),
         (m4, "Demand Volatility",    f"{demand_vol:.1f}%",
          "coefficient of variation", "#FBBC04"),
     ]:
@@ -122,59 +134,51 @@ def render_demand_forecasting_tab(df):
     # Forecast chart
     fig_fc = go.Figure()
 
-    # Confidence interval — forecast only
+    # CI band
     fig_fc.add_trace(go.Scatter(
-        x=pd.concat([forecast[fore_mask]['ds'],
-                     forecast[fore_mask]['ds'][::-1]]),
-        y=pd.concat([forecast[fore_mask]['yhat_upper'],
-                     forecast[fore_mask]['yhat_lower'][::-1]]),
-        fill='toself', fillcolor='rgba(66,133,244,0.12)',
+        x=np.concatenate([future_years, future_years[::-1]]).tolist(),
+        y=np.concatenate([ci_upper, ci_lower[::-1]]).tolist(),
+        fill='toself', fillcolor='rgba(52,168,83,0.1)',
         line=dict(color='rgba(0,0,0,0)'),
-        name='95% Confidence Interval', showlegend=True
+        name='95% Confidence Interval'
     ))
-
-    # Historical fitted line
+    # Fitted values
     fig_fc.add_trace(go.Scatter(
-        x=forecast[hist_mask]['ds'],
-        y=forecast[hist_mask]['yhat'],
+        x=years.tolist(), y=fitted_vals.tolist(),
         mode='lines',
         line=dict(color='rgba(66,133,244,0.4)', width=2, dash='dot'),
-        name='Historical Trend (fitted)', showlegend=True
+        name='Model Fit'
     ))
-
-    # Actual historical points
+    # Actual
     fig_fc.add_trace(go.Scatter(
-        x=prophet_df['ds'], y=prophet_df['y'],
+        x=years.tolist(), y=y.tolist(),
         mode='lines+markers',
         line=dict(color='#4285F4', width=2.5),
-        marker=dict(size=8, color='#4285F4'),
-        name='Actual Import Demand ($B)', showlegend=True
+        marker=dict(size=8),
+        name='Actual Import Demand ($B)'
     ))
-
-    # Forecast line
+    # Forecast
     fig_fc.add_trace(go.Scatter(
-        x=forecast[fore_mask]['ds'],
-        y=forecast[fore_mask]['yhat'],
+        x=future_years.tolist(), y=forecast_vals.tolist(),
         mode='lines+markers',
         line=dict(color='#34A853', width=2.5, dash='dash'),
         marker=dict(size=8, symbol='diamond', color='#34A853'),
-        name='Forecasted Demand ($B)', showlegend=True
+        name='Forecasted Demand ($B)'
     ))
-
-    # Divider line at last actual
     fig_fc.add_vline(
-        x=prophet_df['ds'].max(),
-        line_dash="dot", line_color="gray",
-        annotation_text="Forecast starts",
-        annotation_position="top right"
+        x=int(years[-1]),
+        line_dash='dot', line_color='gray',
+        annotation_text='Forecast starts',
+        annotation_position='top right'
     )
-
     fig_fc.update_layout(
-        height=360,
-        margin=dict(l=0,r=0,t=10,b=0),
+        height=360, margin=dict(l=0, r=0, t=10, b=0),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(title='Year', showgrid=False),
+        xaxis=dict(title='Year', showgrid=False,
+                   tickmode='array',
+                   tickvals=np.concatenate(
+                       [years, future_years]).tolist()),
         yaxis=dict(title='Import Value ($B)',
                    gridcolor='rgba(128,128,128,0.12)'),
         legend=dict(orientation='h', y=1.12),
@@ -184,43 +188,32 @@ def render_demand_forecasting_tab(df):
 
     # ── SECTION 2: INVENTORY OPTIMIZATION ──────────────────────────
     st.markdown("---")
-    st.markdown("<p class='section-lbl'>Inventory Optimization — Reorder Point & Safety Stock Analysis</p>",
-                unsafe_allow_html=True)
+    st.markdown(
+        "<p class='section-lbl'>"
+        "Inventory Optimization — Reorder Point & Safety Stock</p>",
+        unsafe_allow_html=True
+    )
 
-    # Inventory calculations using demand data
-    # Convert annual $B to monthly units proxy
-    monthly_demand   = (last_actual * 1e9) / 12        # monthly $ demand
-    daily_demand     = monthly_demand / 30             # daily demand
-    demand_std       = (cat_data['import_bn'].std() * 1e9) / 12  # monthly std
-    daily_demand_std = demand_std / 30
+    monthly_demand   = (last_actual * 1e9) / 12
+    daily_demand     = monthly_demand / 30
+    monthly_std      = (np.std(y) * 1e9) / 12
+    daily_std        = monthly_std / 30
+    z_score          = 1.65       # 95% service level
+    safety_stock     = z_score * daily_std * np.sqrt(lead_time_days)
+    reorder_point    = daily_demand * lead_time_days + safety_stock
+    stockout_risk    = min((demand_vol / 100) * (lead_time_days / 30) * 100, 95)
 
-    # Safety stock (z=1.65 for 95% service level)
-    z_score          = 1.65
-    lead_time_demand = daily_demand * lead_time_days
-    safety_stock     = z_score * daily_demand_std * np.sqrt(lead_time_days)
-    reorder_point    = lead_time_demand + safety_stock
-
-    # EOQ (Economic Order Quantity) — simplified
-    holding_cost_pct = 0.25   # 25% of value per year
-    ordering_cost    = 50000  # fixed cost per order
-    annual_demand_v  = last_actual * 1e9
-    eoq = np.sqrt((2 * annual_demand_v * ordering_cost) /
-                  (holding_cost_pct * (annual_demand_v / 12)))
-
-    # Stockout risk
-    stockout_risk = (demand_vol / 100) * (lead_time_days / 30) * 100
-    stockout_risk = min(stockout_risk, 95)
-
-    inv1,inv2,inv3,inv4 = st.columns(4)
+    inv1, inv2, inv3, inv4 = st.columns(4)
     for col, lbl, val, sub, clr in [
-        (inv1, "Daily Demand",     f"${daily_demand/1e6:.1f}M",
-         "average daily import value", "#4285F4"),
-        (inv2, "Safety Stock",     f"${safety_stock/1e9:.2f}B",
-         f"at 95% service level", "#34A853"),
-        (inv3, "Reorder Point",    f"${reorder_point/1e9:.2f}B",
+        (inv1, "Daily Demand",
+         f"${daily_demand/1e6:.1f}M", "avg daily import value", "#4285F4"),
+        (inv2, "Safety Stock",
+         f"${safety_stock/1e9:.2f}B", "at 95% service level", "#34A853"),
+        (inv3, "Reorder Point",
+         f"${reorder_point/1e9:.2f}B",
          f"at {lead_time_days}-day lead time", "#FBBC04"),
-        (inv4, "Stockout Risk",    f"{stockout_risk:.1f}%",
-         "probability without buffer", "#EA4335"),
+        (inv4, "Stockout Risk",
+         f"{stockout_risk:.1f}%", "without buffer stock", "#EA4335"),
     ]:
         col.markdown(f"""
         <div class='df-metric'>
@@ -230,89 +223,77 @@ def render_demand_forecasting_tab(df):
         </div>""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-
     inv_col1, inv_col2 = st.columns(2)
 
     with inv_col1:
-        # Inventory level simulation
-        st.markdown("**Inventory Level Simulation — 12 Month Cycle**")
-        months = np.arange(0, 13)
-        eoq_units = eoq / (annual_demand_v / 12)
-
-        inv_levels = []
-        current    = eoq_units + safety_stock / (annual_demand_v / 12)
-        for m in months:
-            inv_levels.append(current)
-            current -= 1
-            if current <= (reorder_point / (annual_demand_v / 12)):
-                current = eoq_units + safety_stock / (annual_demand_v / 12)
+        st.markdown("**Inventory Cycle Simulation — 12 Months**")
+        eoq_proxy    = 3.0   # months of stock per order
+        current_inv  = eoq_proxy + safety_stock / monthly_demand
+        rop_proxy    = reorder_point / monthly_demand
+        ss_proxy     = safety_stock / monthly_demand
+        inv_levels   = []
+        cur          = current_inv
+        for _ in range(13):
+            inv_levels.append(max(cur, 0))
+            cur -= 1
+            if cur <= rop_proxy:
+                cur = eoq_proxy + ss_proxy
 
         fig_inv = go.Figure()
         fig_inv.add_trace(go.Scatter(
-            x=months, y=inv_levels,
+            x=list(range(13)), y=inv_levels,
             fill='tozeroy', fillcolor='rgba(66,133,244,0.1)',
-            line=dict(color='#4285F4', width=2),
-            name='Inventory Level'
+            line=dict(color='#4285F4', width=2), name='Inventory Level'
         ))
         fig_inv.add_hline(
-            y=reorder_point / (annual_demand_v / 12),
-            line_dash='dash', line_color='#FBBC04',
+            y=rop_proxy, line_dash='dash', line_color='#FBBC04',
             annotation_text='Reorder Point',
             annotation_position='right'
         )
         fig_inv.add_hline(
-            y=safety_stock / (annual_demand_v / 12),
-            line_dash='dot', line_color='#EA4335',
+            y=ss_proxy, line_dash='dot', line_color='#EA4335',
             annotation_text='Safety Stock',
             annotation_position='right'
         )
         fig_inv.update_layout(
-            height=280, margin=dict(l=0,r=80,t=10,b=0),
+            height=280, margin=dict(l=0, r=80, t=10, b=0),
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             xaxis=dict(title='Month', showgrid=False,
                        tickvals=list(range(13)),
                        ticktext=[f'M{i}' for i in range(13)]),
-            yaxis=dict(title='Inventory Units (proxy)',
+            yaxis=dict(title='Months of Stock',
                        gridcolor='rgba(128,128,128,0.12)'),
             showlegend=False
         )
         st.plotly_chart(fig_inv, use_container_width=True)
 
     with inv_col2:
-        # Lead time sensitivity analysis
         st.markdown("**Lead Time Sensitivity — Safety Stock vs Lead Time**")
         lt_range = np.arange(7, 91, 7)
-        ss_range = [
-            z_score * daily_demand_std * np.sqrt(lt) / 1e9
-            for lt in lt_range
-        ]
+        ss_range = [z_score * daily_std * np.sqrt(lt) / 1e9 for lt in lt_range]
         rop_range = [
-            (daily_demand * lt + z_score * daily_demand_std * np.sqrt(lt)) / 1e9
+            (daily_demand * lt + z_score * daily_std * np.sqrt(lt)) / 1e9
             for lt in lt_range
         ]
-
         fig_sens = go.Figure()
         fig_sens.add_trace(go.Scatter(
-            x=lt_range, y=ss_range,
+            x=lt_range.tolist(), y=ss_range,
             mode='lines+markers',
-            line=dict(color='#34A853', width=2),
-            name='Safety Stock ($B)'
+            line=dict(color='#34A853', width=2), name='Safety Stock ($B)'
         ))
         fig_sens.add_trace(go.Scatter(
-            x=lt_range, y=rop_range,
+            x=lt_range.tolist(), y=rop_range,
             mode='lines+markers',
-            line=dict(color='#EA4335', width=2),
-            name='Reorder Point ($B)'
+            line=dict(color='#EA4335', width=2), name='Reorder Point ($B)'
         ))
         fig_sens.add_vline(
-            x=lead_time_days, line_dash='dot',
-            line_color='#FBBC04',
+            x=lead_time_days, line_dash='dot', line_color='#FBBC04',
             annotation_text=f'Current: {lead_time_days}d',
             annotation_position='top'
         )
         fig_sens.update_layout(
-            height=280, margin=dict(l=0,r=0,t=10,b=0),
+            height=280, margin=dict(l=0, r=0, t=10, b=0),
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             xaxis=dict(title='Lead Time (days)', showgrid=False),
@@ -324,8 +305,11 @@ def render_demand_forecasting_tab(df):
 
     # ── SECTION 3: SUPPLIER PERFORMANCE ────────────────────────────
     st.markdown("---")
-    st.markdown("<p class='section-lbl'>Supplier Performance — Country-Level Analysis</p>",
-                unsafe_allow_html=True)
+    st.markdown(
+        "<p class='section-lbl'>"
+        "Supplier Performance — Country-Level Analysis</p>",
+        unsafe_allow_html=True
+    )
 
     cat_country = (
         df[df['product_category'] == selected_cat]
@@ -334,170 +318,166 @@ def render_demand_forecasting_tab(df):
             total_export=('export_value_usd', 'sum'),
             geo_risk=('geo_risk_score', 'mean'),
             trade_openness=('trade_openness_score', 'mean'),
-            years=('year', 'nunique')
         ).reset_index()
     )
-    cat_country['import_bn']     = (cat_country['total_import'] / 1e9).round(2)
-    cat_country['export_bn']     = (cat_country['total_export'] / 1e9).round(2)
-    cat_country['trade_balance'] = (cat_country['export_bn'] - cat_country['import_bn']).round(2)
-    cat_country['import_share']  = (
+    cat_country['import_bn']    = (cat_country['total_import'] / 1e9).round(2)
+    cat_country['import_share'] = (
         cat_country['import_bn'] / cat_country['import_bn'].sum() * 100
     ).round(1)
-
-    # Supplier risk score: combination of geo_risk and import_share
-    cat_country['supplier_risk_score'] = (
-        (cat_country['geo_risk'] * 0.5) +
-        (cat_country['import_share'] / 10 * 0.5)
+    cat_country['supplier_risk'] = (
+        cat_country['geo_risk'] * 0.5 +
+        (cat_country['import_share'] / 10) * 0.5
     ).round(2)
 
-    top10 = cat_country.nlargest(10, 'import_bn')
+    top10 = cat_country.nlargest(10, 'import_bn').reset_index(drop=True)
 
     sp1, sp2 = st.columns(2)
 
     with sp1:
-        st.markdown("**Top 10 Import Sources — Share & Risk**")
+        st.markdown("**Top 10 Import Sources — Concentration vs Risk**")
         fig_sp = px.scatter(
-            top10,
-            x='import_share',
-            y='geo_risk',
-            size='import_bn',
-            color='supplier_risk_score',
+            top10, x='import_share', y='geo_risk',
+            size='import_bn', color='supplier_risk',
             text='country',
-            color_continuous_scale=['#34A853','#FBBC04','#EA4335'],
-            range_color=[0,10],
-            size_max=40,
-            hover_data={
-                'import_bn': ':.1f',
-                'import_share': ':.1f',
-                'geo_risk': ':.1f',
-                'trade_openness': ':.1f'
-            }
+            color_continuous_scale=['#34A853', '#FBBC04', '#EA4335'],
+            range_color=[0, 10], size_max=40,
         )
         fig_sp.update_traces(
-            textposition='top center',
-            textfont=dict(size=10),
+            textposition='top center', textfont=dict(size=10),
             hovertemplate=(
                 "<b>%{text}</b><br>"
                 "Import Share: %{x:.1f}%<br>"
                 "Geo Risk: %{y:.1f}/10<br>"
-                "Import Value: $%{customdata[0]:.1f}B<br>"
                 "<extra></extra>"
             )
         )
-        fig_sp.add_vline(x=top10['import_share'].mean(),
-                         line_dash='dot', line_color='gray',
-                         annotation_text='Avg share',
-                         annotation_position='bottom right')
-        fig_sp.add_hline(y=5, line_dash='dot', line_color='#EA4335',
-                         annotation_text='High risk threshold',
-                         annotation_position='right')
+        fig_sp.add_vline(
+            x=float(top10['import_share'].mean()),
+            line_dash='dot', line_color='gray',
+            annotation_text='Avg share',
+            annotation_position='bottom right'
+        )
+        fig_sp.add_hline(
+            y=5, line_dash='dot', line_color='#EA4335',
+            annotation_text='High risk threshold',
+            annotation_position='right'
+        )
         fig_sp.update_layout(
-            height=320, margin=dict(l=0,r=0,t=10,b=0),
+            height=320, margin=dict(l=0, r=0, t=10, b=0),
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             xaxis=dict(title='Import Market Share (%)', showgrid=False),
-            yaxis=dict(title='Geopolitical Risk Score (1-10)',
+            yaxis=dict(title='Geopolitical Risk (1-10)',
                        gridcolor='rgba(128,128,128,0.12)'),
             coloraxis_showscale=False
         )
         st.plotly_chart(fig_sp, use_container_width=True)
 
     with sp2:
-        st.markdown("**Supplier Performance Scorecard**")
+        st.markdown("**Supplier Scorecard**")
 
-        def risk_label(score):
-            if score >= 6: return 'High Risk'
-            elif score >= 3: return 'Medium Risk'
+        def risk_label(s):
+            if s >= 6:   return 'High Risk'
+            elif s >= 3: return 'Medium Risk'
             return 'Low Risk'
 
-        def risk_color(label):
-            return {
+        def style_risk(val):
+            colors = {
                 'High Risk':   'background-color:rgba(234,67,53,0.15);color:#EA4335',
-                'Medium Risk': 'background-color:rgba(251,188,4,0.15);color:#B8860B',
+                'Medium Risk': 'background-color:rgba(251,188,4,0.15);color:#9a6c00',
                 'Low Risk':    'background-color:rgba(52,168,83,0.15);color:#34A853',
-            }.get(label, '')
+            }
+            return colors.get(val, '')
 
-        scorecard = top10[[
-            'country','import_bn','import_share',
-            'geo_risk','trade_openness','supplier_risk_score'
+        sc = top10[[
+            'country', 'import_bn', 'import_share',
+            'geo_risk', 'trade_openness', 'supplier_risk'
         ]].copy()
-        scorecard['risk_label'] = scorecard['supplier_risk_score'].apply(risk_label)
-        scorecard['import_bn']   = scorecard['import_bn'].apply(lambda x: f"${x:.1f}B")
-        scorecard['import_share'] = scorecard['import_share'].apply(lambda x: f"{x:.1f}%")
-        scorecard['geo_risk']    = scorecard['geo_risk'].apply(lambda x: f"{x:.1f}/10")
-        scorecard['trade_openness'] = scorecard['trade_openness'].apply(lambda x: f"{x:.1f}/10")
-        scorecard.columns = [
-            'Country','Import Value','Share',
-            'Geo Risk','Trade Openness','Risk Score','Risk Level'
+        sc['risk_label']     = sc['supplier_risk'].apply(risk_label)
+        sc['import_bn']      = sc['import_bn'].apply(lambda x: f"${x:.1f}B")
+        sc['import_share']   = sc['import_share'].apply(lambda x: f"{x:.1f}%")
+        sc['geo_risk']       = sc['geo_risk'].apply(lambda x: f"{x:.1f}/10")
+        sc['trade_openness'] = sc['trade_openness'].apply(lambda x: f"{x:.1f}/10")
+        sc.columns = [
+            'Country', 'Import Value', 'Share',
+            'Geo Risk', 'Trade Openness', 'Risk Score', 'Risk Level'
         ]
         st.dataframe(
-            scorecard.style.map(risk_color, subset=['Risk Level']),
-            use_container_width=True,
-            hide_index=True,
-            height=320
+            sc.style.map(style_risk, subset=['Risk Level']),
+            use_container_width=True, hide_index=True, height=320
         )
 
     # ── SECTION 4: EXECUTIVE RECOMMENDATIONS ───────────────────────
     st.markdown("---")
-    st.markdown("<p class='section-lbl'>Executive Recommendations</p>",
-                unsafe_allow_html=True)
+    st.markdown(
+        "<p class='section-lbl'>Executive Recommendations</p>",
+        unsafe_allow_html=True
+    )
 
-    # Dynamic recommendations based on data
-    high_risk_suppliers = top10[top10['supplier_risk_score'] >= 6]
-    top_supplier        = top10.nlargest(1, 'import_share').iloc[0]
-    conc_risk           = top_supplier['import_share'] > 25
+    top_supplier = top10.nlargest(1, 'import_share').iloc[0]
+    conc_risk    = top_supplier['import_share'] > 25
+    high_risk_s  = top10[top10['supplier_risk'] >= 6]
 
     recs = [
         {
-            "color": "#EA4335",
-            "title": f"Demand Forecast Alert — {growth_pct:+.1f}% projected growth in {selected_cat}",
+            "color": "#EA4335" if growth_pct > 10 else "#FBBC04",
+            "title": (
+                f"Demand Forecast Alert — {growth_pct:+.1f}% projected "
+                f"growth in {selected_cat}"
+            ),
             "sub": (
-                f"Prophet model projects ${next_forecast:.1f}B in {last_year+1} imports "
-                f"({'increase' if growth_pct > 0 else 'decline'} from ${last_actual:.1f}B). "
-                f"Adjust procurement volumes and safety stock buffers accordingly "
-                f"before Q1 {last_year+1} contracting cycles."
+                f"Model projects ${next_forecast:.1f}B in "
+                f"{future_years[0]} imports "
+                f"({'increase' if growth_pct > 0 else 'decline'} from "
+                f"${last_actual:.1f}B). Adjust procurement volumes and "
+                f"safety stock buffers before Q1 {future_years[0]} "
+                f"contracting cycles."
             )
         },
         {
             "color": "#FBBC04",
-            "title": f"Inventory Action — Reorder Point set at ${reorder_point/1e9:.2f}B",
+            "title": (
+                f"Inventory Action — Reorder Point at "
+                f"${reorder_point/1e9:.2f}B"
+            ),
             "sub": (
-                f"With a {lead_time_days}-day supplier lead time and {demand_vol:.1f}% demand "
-                f"volatility, maintain a safety stock of ${safety_stock/1e9:.2f}B "
-                f"to achieve 95% service level. Current stockout risk without buffer: "
-                f"{stockout_risk:.1f}%."
+                f"With {lead_time_days}-day lead time and {demand_vol:.1f}% "
+                f"demand volatility, maintain safety stock of "
+                f"${safety_stock/1e9:.2f}B for 95% service level. "
+                f"Stockout risk without buffer: {stockout_risk:.1f}%."
             )
         },
         {
             "color": "#EA4335" if conc_risk else "#34A853",
             "title": (
                 f"{'High' if conc_risk else 'Moderate'} Concentration Risk — "
-                f"{top_supplier['country']} holds {top_supplier['import_share']:.1f}% share"
+                f"{top_supplier['country']} holds "
+                f"{top_supplier['import_share']:.1f}% share"
             ),
             "sub": (
-                f"{'Dangerous single-source dependency detected. ' if conc_risk else ''}"
-                f"{top_supplier['country']} is the dominant import source for {selected_cat}. "
-                f"{'Immediate diversification recommended — identify 2 alternative source countries.' if conc_risk else 'Monitor concentration levels and develop contingency sourcing plan.'}"
+                f"{'Single-source dependency detected. ' if conc_risk else ''}"
+                f"{top_supplier['country']} dominates {selected_cat} imports. "
+                f"{'Immediate diversification recommended.' if conc_risk else 'Develop contingency sourcing plan.'}"
             )
         },
         {
-            "color": "#EA4335" if len(high_risk_suppliers) > 0 else "#34A853",
+            "color": "#EA4335" if len(high_risk_s) > 0 else "#34A853",
             "title": (
-                f"{len(high_risk_suppliers)} High-Risk Supplier "
-                f"{'Nation' if len(high_risk_suppliers)==1 else 'Nations'} Flagged"
+                f"{len(high_risk_s)} High-Risk Supplier "
+                f"{'Nation' if len(high_risk_s) == 1 else 'Nations'} Flagged"
             ),
             "sub": (
-                f"{'Countries flagged: ' + ', '.join(high_risk_suppliers['country'].tolist()) + '. ' if len(high_risk_suppliers)>0 else 'All top suppliers currently within acceptable risk parameters. '}"
-                f"Recommend quarterly geo-risk reviews and dual-sourcing contracts "
-                f"for any nation with geo risk > 5/10 and import share > 10%."
+                f"{'Nations: ' + ', '.join(high_risk_s['country'].tolist()) + '. ' if len(high_risk_s) > 0 else 'All top suppliers within acceptable parameters. '}"
+                f"Recommend quarterly geo-risk reviews and dual-sourcing "
+                f"contracts for nations with risk score above 6."
             )
         },
         {
             "color": "#4285F4",
-            "title": f"Lead Time Optimization — Reduce to below 21 days where possible",
+            "title": "Lead Time Optimization — Reduce to 21 days where possible",
             "sub": (
-                f"Sensitivity analysis shows safety stock requirements drop by "
-                f"{((safety_stock - z_score*daily_demand_std*np.sqrt(21))/1e9):.2f}B "
+                f"Safety stock requirements drop by "
+                f"${(safety_stock - z_score*daily_std*np.sqrt(21))/1e9:.2f}B "
                 f"if lead time is reduced from {lead_time_days} to 21 days. "
                 f"Prioritize near-shore suppliers for high-volatility categories."
             )
@@ -514,24 +494,25 @@ def render_demand_forecasting_tab(df):
               <div class='rec-sub'>{rec["sub"]}</div>
             </div>""", unsafe_allow_html=True)
 
-    # All categories trend
+    # ── ALL CATEGORIES TREND ────────────────────────────────────────
     st.markdown("---")
-    st.markdown("<p class='section-lbl'>All Categories — Import Demand Trend Comparison</p>",
-                unsafe_allow_html=True)
+    st.markdown(
+        "<p class='section-lbl'>"
+        "All Categories — Import Demand Trend Comparison</p>",
+        unsafe_allow_html=True
+    )
 
-    all_trend = demand.copy()
     fig_all = px.line(
-        all_trend, x='year', y='import_bn',
-        color='product_category',
-        markers=True,
-        labels={'import_bn':'Import Value ($B)', 'year':'Year',
-                'product_category':'Category'},
+        demand, x='year', y='import_bn',
+        color='product_category', markers=True,
+        labels={'import_bn': 'Import Value ($B)', 'year': 'Year',
+                'product_category': 'Category'},
         color_discrete_sequence=[
-            '#4285F4','#34A853','#FBBC04','#EA4335','#9C27B0','#00BCD4'
+            '#4285F4', '#34A853', '#FBBC04', '#EA4335', '#9C27B0', '#00BCD4'
         ]
     )
     fig_all.update_layout(
-        height=320, margin=dict(l=0,r=0,t=10,b=0),
+        height=320, margin=dict(l=0, r=0, t=10, b=0),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
         xaxis=dict(showgrid=False, title='Year'),
@@ -544,8 +525,8 @@ def render_demand_forecasting_tab(df):
 
     st.markdown(
         "<p style='font-size:0.72rem;opacity:0.3;'>"
-        "Demand forecasting powered by Meta Prophet · "
-        "Inventory optimization using EOQ and safety stock models · "
+        "Demand forecasting powered by Holt-Winters Exponential Smoothing · "
+        "Inventory optimization using safety stock and reorder point models · "
         "Built by Akshada Karade · MS Engineering Management · UMass Amherst"
         "</p>",
         unsafe_allow_html=True
