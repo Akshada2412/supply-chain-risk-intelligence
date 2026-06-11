@@ -227,6 +227,16 @@ def compute_risk(filtered_df):
         ascending=[True, False]
     )
 
+    # Add import totals per category for bubble sizing
+    import_totals = (
+        filtered_df.groupby('product_category')
+        ['import_value_usd'].sum()
+        .reset_index()
+    )
+    import_totals.columns = [
+        'product_category', 'total_import_usd'
+    ]
+
     hhi = (
         country_shares.groupby('product_category')
         .agg(
@@ -236,6 +246,10 @@ def compute_risk(filtered_df):
             weighted_geo_risk=('share_x_geo', 'sum')
         ).reset_index()
     )
+    hhi = hhi.merge(import_totals, on='product_category')
+    hhi['import_total_bn'] = (
+        hhi['total_import_usd'] / 1e9
+    ).round(1)
     # Divide by 100 to normalise: weighted_geo is on 0–10 scale
     hhi['geo_risk_score'] = (
         hhi['weighted_geo_risk'] / 100
@@ -627,52 +641,99 @@ with r1:
 with r2:
     st.markdown(
         "<p class='chart-title'>"
-        "HHI Score vs Geo Risk — Bubble View</p>"
+        "Concentration vs Geo Risk — Category Bubble Map</p>"
         "<p style='font-size:0.75rem;opacity:0.45;"
         "margin-top:-0.25rem;'>"
-        "Y-axis reflects avg geo risk of filtered "
-        "supplier base · updates with filters</p>",
+        "Bubble size = total import value · "
+        "Color = combined risk · "
+        "Top-right = highest danger</p>",
         unsafe_allow_html=True
     )
+
     fig4 = px.scatter(
         risk_df,
         x='hhi_score',
         y='geo_risk_score',
-        size='combined_risk_score',
-        color='product_category',
-        color_discrete_sequence=[
-            '#F59E0B', '#EF4444', '#60A5FA',
-            '#34D399', '#A78BFA'
+        size='import_total_bn',
+        color='combined_risk_score',
+        color_continuous_scale=[
+            '#34D399',   # low risk  — green
+            '#F59E0B',   # medium    — amber
+            '#EF4444',   # high risk — red
         ],
-        size_max=25,
-        hover_name='product_category'
+        size_max=55,
+        text='product_category',
+        custom_data=[
+            'top_supplier',
+            'top_share_pct',
+            'import_total_bn',
+            'weighted_geo_risk',
+            'combined_risk_score',
+        ]
     )
+
+    # Danger zone shading — top-right quadrant
+    fig4.add_shape(
+        type='rect',
+        x0=risk_df['hhi_score'].median(),
+        x1=risk_df['hhi_score'].max() * 1.15,
+        y0=risk_df['geo_risk_score'].median(),
+        y1=risk_df['geo_risk_score'].max() * 1.12,
+        fillcolor='rgba(239,68,68,0.06)',
+        line=dict(
+            color='rgba(239,68,68,0.2)',
+            dash='dot'
+        )
+    )
+    fig4.add_annotation(
+        x=risk_df['hhi_score'].max() * 1.05,
+        y=risk_df['geo_risk_score'].max() * 1.08,
+        text='⚠ Danger Zone',
+        showarrow=False,
+        font=dict(color='#EF4444', size=11),
+        xanchor='right'
+    )
+
     fig4.update_traces(
+        textposition='top center',
+        textfont=dict(size=10),
         hovertemplate=(
-            "<b>%{hovertext}</b><br>"
+            "<b>%{text}</b><br>"
             "HHI Score: <b>%{x:.1f}</b><br>"
-            "Geo Risk: <b>%{y:.2f}/10</b><br>"
-            "<i>Top-right = highest danger zone</i>"
+            "Weighted Geo Risk: <b>%{y:.2f}/10</b><br>"
+            "Total Imports: <b>$%{customdata[2]:.0f}B</b><br>"
+            "Top Supplier: <b>%{customdata[0]}"
+            " (%{customdata[1]:.1f}%)</b><br>"
+            "Combined Risk: <b>%{customdata[4]:.2f}</b><br>"
+            "<i>Bubble size = import value · "
+            "Color = combined risk</i>"
             "<extra></extra>"
         )
     )
+
     fig4.update_layout(
-        height=320,
+        height=340,
         margin=dict(l=0, r=0, t=5, b=0),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
         xaxis=dict(
-            title='HHI Concentration Score',
+            title='HHI Concentration Score'
+            ' (higher = more concentrated)',
             showgrid=False
         ),
         yaxis=dict(
-            title='Avg Geo Risk Score',
+            title='Share-Weighted Geo Risk (0–10)',
             gridcolor='rgba(128,128,128,0.1)'
         ),
-        legend=dict(
-            title='Category',
-            orientation='v',
-            x=1.0
+        coloraxis_colorbar=dict(
+            title='Combined<br>Risk',
+            thickness=12,
+            len=0.7,
+            tickvals=[
+                risk_df['combined_risk_score'].min(),
+                risk_df['combined_risk_score'].max()
+            ],
+            ticktext=['Low', 'High']
         )
     )
     st.plotly_chart(fig4, use_container_width=True)
