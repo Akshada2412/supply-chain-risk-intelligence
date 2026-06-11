@@ -210,16 +210,36 @@ def compute_risk(filtered_df):
         country_shares['market_share_pct'] ** 2
     )
 
+    # Share-weighted geo risk: each country's geo risk is weighted
+    # by its export share — the same shares used in HHI.
+    # This ensures methodological consistency and correctly reflects
+    # that a country supplying 25% of global exports contributes
+    # 25% to the geo-risk component, not the same as one at 0.5%.
+    # Formula: weighted_geo = Σ(share_i × geo_risk_i) / 100
+    country_shares['share_x_geo'] = (
+        country_shares['market_share_pct'] *
+        country_shares['geo_risk_score']
+    )
+
+    # Sort descending by share so .first() returns the top supplier
+    country_shares = country_shares.sort_values(
+        ['product_category', 'market_share_pct'],
+        ascending=[True, False]
+    )
+
     hhi = (
         country_shares.groupby('product_category')
         .agg(
             hhi_score=('share_squared', 'sum'),
             top_supplier=('country', 'first'),
             top_share_pct=('market_share_pct', 'first'),
-            geo_risk_score=('geo_risk_score', 'mean')
+            weighted_geo_risk=('share_x_geo', 'sum')
         ).reset_index()
     )
-    hhi['geo_risk_score'] = hhi['geo_risk_score'].round(2)
+    # Divide by 100 to normalise: weighted_geo is on 0–10 scale
+    hhi['geo_risk_score'] = (
+        hhi['weighted_geo_risk'] / 100
+    ).round(2)
     hhi['hhi_score'] = hhi['hhi_score'].round(1)
     hhi['hhi_normalized'] = (
         hhi['hhi_score'] / 10000 * 10

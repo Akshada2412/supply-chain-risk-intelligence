@@ -92,26 +92,44 @@ print(hhi.to_string(index=False))
 print()
 
 # STEP 3 — Combined Risk Score
-# HHI + Geo Risk of top supplier = Final Risk Score
-print("STEP 3 — Final Combined Risk Score:")
+# Uses share-weighted geo risk: each country's political risk is
+# weighted by its export share — the same shares used in HHI.
+# This is methodologically consistent: a country supplying 25% of
+# global exports contributes 25% to geo risk, not the same as 0.5%.
+# Formula: weighted_geo = Σ(share_i × geo_risk_i) / 100
+print("STEP 3 — Final Combined Risk Score (share-weighted geo risk):")
 
-df_top_supplier = df_shares.loc[
-    df_shares.groupby('product_category')['market_share_pct'].idxmax()
-][['product_category', 'country', 'geo_risk_score', 'market_share_pct']]
-
-hhi_final = hhi.merge(
-    df_top_supplier[['product_category', 'geo_risk_score']],
-    on='product_category'
+df_shares['share_x_geo'] = (
+    df_shares['market_share_pct'] * df_shares['geo_risk_score']
 )
 
-# Normalize HHI to 0-10 scale and combine with geo risk
+weighted_geo = df_shares.groupby('product_category').agg(
+    weighted_geo_sum=('share_x_geo', 'sum')
+).reset_index()
+weighted_geo['weighted_geo_risk'] = (
+    weighted_geo['weighted_geo_sum'] / 100
+).round(2)
+
+# Also retain top supplier for reference display
+df_top_supplier = df_shares.loc[
+    df_shares.groupby('product_category')['market_share_pct'].idxmax()
+][['product_category', 'country', 'market_share_pct']]
+df_top_supplier = df_top_supplier.rename(columns={'country': 'top_supplier_name'})
+
+hhi_final = hhi.merge(weighted_geo[['product_category', 'weighted_geo_risk']], on='product_category')
+hhi_final = hhi_final.merge(df_top_supplier, on='product_category')
+
+# Rename for consistency with app.py
+hhi_final['geo_risk_score'] = hhi_final['weighted_geo_risk']
+
+# Normalize HHI to 0-10 scale and combine with weighted geo risk
 hhi_final['hhi_normalized'] = (
     hhi_final['hhi_score'] / 10000 * 10
 ).round(2)
 
 hhi_final['combined_risk_score'] = (
     (hhi_final['hhi_normalized'] * 0.6) +
-    (hhi_final['geo_risk_score'] * 0.4)
+    (hhi_final['weighted_geo_risk'] * 0.4)
 ).round(2)
 
 hhi_final = hhi_final.sort_values(
@@ -123,7 +141,7 @@ print(hhi_final[[
     'top_supplier',
     'top_share_pct',
     'hhi_score',
-    'geo_risk_score',
+    'weighted_geo_risk',
     'combined_risk_score',
     'concentration_risk'
 ]].to_string(index=False))
