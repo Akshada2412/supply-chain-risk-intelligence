@@ -1,6 +1,6 @@
-product_category,hhi_score,top_supplier,top_share_pct,concentration_risk,geo_risk_score,hhi_normalized,combined_risk_score
-Electronics,650.5,China,17.2446,LOW,7,0.65,3.19
-Raw Materials,1249.6,United States,29.2696,LOW,2,1.25,1.55
-Semiconductors,923.6,United States,22.3944,LOW,2,0.92,1.35
-Auto Parts,807.4,United States,17.5437,LOW,2,0.81,1.29
-Pharmaceuticals,758.4,United States,14.1029,LOW,2,0.76,1.26
+product_category,hhi_score,hhi_normalized,weighted_geo_risk,combined_risk_score,concentration_risk,top_supplier,top_share_pct
+Raw Materials,1249.6,1.25,3.08,1.98,LOW,United States,29.3
+Electronics,650.5,0.65,3.54,1.81,LOW,China,17.2
+Auto Parts,807.4,0.81,3.18,1.76,LOW,United States,17.5
+Pharmaceuticals,758.4,0.76,3.15,1.72,LOW,United States,14.1
+Semiconductors,923.6,0.92,2.81,1.68,LOW,United States,22.4
