@@ -165,6 +165,65 @@ def portfolio_rollup(metrics):
 
 
 # ============================================================
+# FEASIBILITY DIAGNOSTIC  —  names the actually-binding constraint
+# ============================================================
+# The solver returns None on infeasibility but not *why*. Two constraints
+# can independently make a category impossible to cover to 100%:
+#   1. Supplier scale-up F  — each supplier caps at F x its real exports
+#   2. Supplier-count N (MILP) — only the N largest suppliers may be used
+# (the diversification cap alpha only binds when suppliers are very few).
+# This pure-numpy check reconstructs the max achievable coverage per
+# category and computes the exact threshold on each lever that fixes it.
+def _coverage(e, D, alpha, F, N):
+    caps = np.sort(np.minimum(e * F, alpha * D))[::-1]
+    if N:
+        caps = caps[:N]
+    return caps.sum() / D
+
+
+def _min_F(e, D, alpha, N, F_now):
+    """Smallest scale-up factor (>= F_now) that reaches full coverage; None if F alone can't."""
+    if _coverage(e, D, alpha, 1e9, N) < 1 - 1e-9:
+        return None
+    lo, hi = F_now, 1e6
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if _coverage(e, D, alpha, mid, N) >= 1 - 1e-9:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def _min_N(e, D, alpha, F_now):
+    """Smallest supplier count (at current F) that reaches full coverage; None if impossible."""
+    caps = np.sort(np.minimum(e * F_now, alpha * D))[::-1]
+    idx = int(np.searchsorted(np.cumsum(caps), D - 1e-6))
+    return idx + 1 if idx < len(caps) else None
+
+
+def diagnose_infeasibility(supply, alpha, F, max_suppliers):
+    """Returns (blocking_categories, global_F_fix, global_N_fix) with exact thresholds."""
+    blocking = []
+    for k, g in supply.groupby("product_category"):
+        D = g["vol"].sum()
+        e = g["vol"].values
+        cov = _coverage(e, D, alpha, F, max_suppliers)
+        if cov < 1 - 1e-9:
+            blocking.append(dict(
+                cat=k, coverage=cov,
+                F_fix=_min_F(e, D, alpha, max_suppliers, F),
+                N_fix=_min_N(e, D, alpha, F),
+            ))
+    blocking.sort(key=lambda r: r["coverage"])
+    F_fixes = [b["F_fix"] for b in blocking if b["F_fix"] is not None]
+    N_fixes = [b["N_fix"] for b in blocking if b["N_fix"] is not None]
+    global_F = max(F_fixes) if len(F_fixes) == len(blocking) and F_fixes else None
+    global_N = max(N_fixes) if len(N_fixes) == len(blocking) and N_fixes else None
+    return blocking, global_F, global_N
+
+
+# ============================================================
 # MAIN TAB
 # ============================================================
 def render_sourcing_optimization_tab(df):
@@ -224,11 +283,30 @@ def render_sourcing_optimization_tab(df):
     alloc, solver = solve_sourcing(supply, alpha, F, max_sup)
 
     if alloc is None:
-        st.error(
-            f"**No feasible allocation** with these settings (solver: {solver}). "
-            "The diversification cap is too tight for the available supplier capacity. "
-            "Loosen the cap, raise the scale-up factor, or allow more suppliers."
-        )
+        blocking, gF, gN = diagnose_infeasibility(supply, alpha, F, max_sup)
+
+        cap_desc = (f"each capped at min({F:g}× exports, {alpha:.0%} of demand)"
+                    if not max_sup else
+                    f"limited to {max_sup} suppliers, each capped at "
+                    f"min({F:g}× exports, {alpha:.0%} of demand)")
+        lines = [
+            f"**No feasible allocation** (solver: {solver}). With suppliers {cap_desc}, "
+            f"{len(blocking)} categor{'y' if len(blocking)==1 else 'ies'} can't reach "
+            f"100% of demand — the binding limit is supplier capacity, not the cap alone:"
+        ]
+        for b in blocking[:3]:
+            lines.append(f"  •  **{b['cat']}** — max {b['coverage']*100:.0f}% coverage")
+
+        fixes = []
+        if gF is not None:
+            snapped = np.ceil(gF / 0.5) * 0.5           # next reachable slider step
+            fixes.append(f"raise **Supplier Scale-Up to {snapped:g}** (need ≥ {gF:.2f})")
+        if max_sup and gN is not None:
+            fixes.append(f"allow **≥ {gN} suppliers**")
+        fixes.append("loosen the **diversification cap**")
+        lines.append("Fix any one: " + "; ".join(fixes) + ".")
+
+        st.error("\n\n".join(lines))
         return
 
     st.markdown(
