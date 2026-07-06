@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
 from demand_forecasting_tab import render_demand_forecasting_tab
+from sourcing_optimization_tab import render_sourcing_optimization_tab
 
 st.set_page_config(
     page_title="Supply Chain Risk Intelligence",
@@ -979,3 +980,4 @@ st.markdown(
     unsafe_allow_html=True
 )
 render_demand_forecasting_tab(df)
+render_sourcing_optimization_tab(df)
